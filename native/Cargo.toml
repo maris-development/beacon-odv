@@ -1,19 +1,36 @@
 [package]
-name = "example-native"
+name = "odv-native"
 version = "0.1.0"
-edition = "2024"
+# The ODV code comes from Beacon, which uses the 2021 edition.
+edition = "2021"
 publish = false
 
 [lib]
-name = "example_native"
+name = "odv_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin a Beacon release tag here. The tag fixes the DataFusion version.
-beacon-plugin-sdk = { git = "https://github.com/maris-development/beacon", branch = "main" }
+# The commit fixes the DataFusion version.
+beacon-plugin-sdk = { git = "https://github.com/maris-development/beacon", rev = "a612fcec6c8493902c7b8148e51c4316d34ac6db" }
 # The file format traits are async traits.
 async-trait = "0.1"
 futures = "0.3"
+anyhow = "1.0.95"
+async_zip = { version = "0.0.18", features = ["deflate", "tokio", "zstd"] }
+bytes = "1.10.0"
+csv = "1.3.1"
+indexmap = { version = "2.7.1", features = ["serde"] }
+regex = "1.11.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3.15.0"
+thiserror = "2.0.12"
+tokio = { version = "1.47.1", features = ["rt", "io-util", "fs", "macros"] }
+tokio-util = { version = "0.7.13", features = ["io", "compat", "codec"] }
+tracing = "0.1.41"
+walkdir = "2.5.0"
+# Without default features, the zip crate has no xz support. Only deflate is used.
+zip = { version = "2.2.3", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

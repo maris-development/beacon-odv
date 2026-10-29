@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -315,6 +324,7 @@ checksum = "9d5755640120b24961f8231e05892e4a4f7e0d04e8aeca161508c9c397946970"
 dependencies = [
  "compression-codecs",
  "compression-core",
+ "futures-io",
  "pin-project-lite",
  "tokio",
 ]
@@ -334,6 +344,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "async_zip"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d8c50d65ce1b0e0cb65a785ff615f78860d7754290647d3b983208daa4f85e6"
+dependencies = [
+ "async-compression",
+ "crc32fast",
+ "futures-lite",
+ "pin-project",
+ "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -360,7 +385,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "beacon-nd-encoding"
 version = "2.1.0-rc.1"
-source = "git+https://github.com/maris-development/beacon?branch=main#56e73855222ae93b7d0603dcb3af2238605d6c98"
+source = "git+https://github.com/maris-development/beacon?rev=a612fcec6c8493902c7b8148e51c4316d34ac6db#a612fcec6c8493902c7b8148e51c4316d34ac6db"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -369,7 +394,7 @@ dependencies = [
 [[package]]
 name = "beacon-plugin-sdk"
 version = "2.1.0-rc.1"
-source = "git+https://github.com/maris-development/beacon?branch=main#56e73855222ae93b7d0603dcb3af2238605d6c98"
+source = "git+https://github.com/maris-development/beacon?rev=a612fcec6c8493902c7b8148e51c4316d34ac6db#a612fcec6c8493902c7b8148e51c4316d34ac6db"
 dependencies = [
  "async-ffi",
  "async-trait",
@@ -1417,6 +1442,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1469,16 +1505,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
-]
-
-[[package]]
-name = "example-native"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "beacon-plugin-sdk",
- "futures",
- "tokio",
 ]
 
 [[package]]
@@ -1588,6 +1614,19 @@ name = "futures-io"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
+
+[[package]]
+name = "futures-lite"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-io",
+ "parking",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "futures-macro"
@@ -1884,6 +1923,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2169,6 +2210,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "odv-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "async_zip",
+ "beacon-plugin-sdk",
+ "bytes",
+ "csv",
+ "futures",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2182,6 +2247,12 @@ checksum = "f1e1c390732d15f1d48471625cd92d154e66db2c56645e29a9cd26f4699f72dc"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "parking"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
@@ -2561,6 +2632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -2875,7 +2947,9 @@ checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]
@@ -3293,6 +3367,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zip"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dcb24d0152526ae49b9b96c1dcf71850ca1e0b882e4e28ed898a93c41334744"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "zopfli",
+]
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3303,6 +3392,18 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zopfli"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaf7fc5d30c28483d93805c4a5e12b05bbb52407fa67c5f8bd552374cd01fb11"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
 
 [[package]]
 name = "zstd"
