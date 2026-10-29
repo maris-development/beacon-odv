@@ -10,13 +10,21 @@ use beacon_plugin_sdk::datafusion::datasource::file_format::file_compression_typ
 use beacon_plugin_sdk::datafusion::error::{DataFusionError, Result};
 use beacon_plugin_sdk::datafusion::execution::SendableRecordBatchStream;
 use beacon_plugin_sdk::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use beacon_plugin_sdk::file_format::{FormatFactory, FormatReader, OutputKind, ScanRequest};
+use beacon_plugin_sdk::file_format::{
+    FormatFactory, FormatReader, OutputKind, ScanRequest, SortKey, WriteRequest,
+};
+use beacon_plugin_sdk::object_store::store::buffered::BufWriter;
 use beacon_plugin_sdk::object_store::store::path::Path;
 use beacon_plugin_sdk::object_store::store::{ObjectMeta, ObjectStore, ObjectStoreExt};
 use bytes::Bytes;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{AsyncWrite, AsyncWriteExt, Stream, StreamExt, TryStreamExt};
+use tokio_util::compat::TokioAsyncWriteCompatExt;
 
 use crate::reader::{AsyncOdvDecoder, OdvSchemaMapper};
+use crate::writer::{AsyncOdvWriter, OdvOptions};
+
+/// The table option with the write options, as `OdvOptions` JSON.
+const ODV_OPTIONS: &str = "odv_options";
 
 /// The `odv` format.
 ///
@@ -37,14 +45,50 @@ impl FormatFactory for OdvFormat {
         OutputKind::Flat
     }
 
-    fn create(&self, _options: &HashMap<String, String>) -> Result<Arc<dyn FormatReader>> {
-        Ok(Arc::new(OdvReader))
+    fn can_write(&self) -> bool {
+        true
+    }
+
+    /// One ODV archive holds all rows.
+    fn split_output(&self) -> bool {
+        false
+    }
+
+    fn content_type(&self) -> &str {
+        "application/zip"
+    }
+
+    fn create(&self, options: &HashMap<String, String>) -> Result<Arc<dyn FormatReader>> {
+        let options = options
+            .get(ODV_OPTIONS)
+            .map(|json| serde_json::from_str::<OdvOptions>(json))
+            .transpose()
+            .map_err(|e| DataFusionError::Configuration(format!("invalid {ODV_OPTIONS}: {e}")))?;
+        Ok(Arc::new(OdvReader { options }))
     }
 }
 
 /// A configured `odv` format.
 #[derive(Debug)]
-pub struct OdvReader;
+pub struct OdvReader {
+    /// The write options. Without them, the writer derives them from the input schema.
+    options: Option<OdvOptions>,
+}
+
+impl OdvReader {
+    fn write_options(&self, schema: &SchemaRef) -> Result<OdvOptions> {
+        match &self.options {
+            Some(options) => Ok(options.clone()),
+            None => OdvOptions::try_from_arrow_schema(schema.clone()).map_err(|e| {
+                DataFusionError::Execution(format!("cannot derive the ODV write options: {e}"))
+            }),
+        }
+    }
+}
+
+fn write_error(error: anyhow::Error) -> DataFusionError {
+    DataFusionError::Execution(format!("cannot write ODV: {error:#}"))
+}
 
 /// The compression of a file, from the extension of its path.
 fn compression_of(location: &Path) -> FileCompressionType {
@@ -119,6 +163,50 @@ impl FormatReader for OdvReader {
             batches.map_err(DataFusionError::from),
         )))
     }
+
+    fn write_ordering(&self, schema: SchemaRef) -> Result<Vec<SortKey>> {
+        let options = self.write_options(&schema)?;
+        let columns = [
+            options.key_column,
+            options.time_column.column_name,
+            options.depth_column.column_name,
+        ];
+        Ok(columns
+            .into_iter()
+            .filter(|column| schema.index_of(column).is_ok())
+            .map(|column| SortKey {
+                column,
+                descending: false,
+                nulls_first: false,
+            })
+            .collect())
+    }
+
+    async fn write(
+        &self,
+        store: Arc<dyn ObjectStore>,
+        request: WriteRequest,
+        mut input: SendableRecordBatchStream,
+    ) -> Result<u64> {
+        let options = self.write_options(&request.schema)?;
+        // The writer puts nothing in the target before `finish`, so an error leaves no object.
+        let target: Box<dyn AsyncWrite + Unpin + Send> = match &request.local_path {
+            Some(path) => Box::new(tokio::fs::File::create(path).await?.compat_write()),
+            None => Box::new(BufWriter::new(store, request.path.clone()).compat_write()),
+        };
+        let mut writer = AsyncOdvWriter::new_from_dyn(target, request.schema.clone(), options)
+            .await
+            .map_err(write_error)?;
+        let mut rows = 0;
+        while let Some(batch) = input.next().await {
+            let batch = batch?;
+            rows += batch.num_rows() as u64;
+            writer.write(batch).await.map_err(write_error)?;
+        }
+        let mut target = writer.finish().await.map_err(write_error)?;
+        target.close().await?;
+        Ok(rows)
+    }
 }
 
 /// The file formats of this plugin.
@@ -132,9 +220,14 @@ mod tests {
     use std::sync::Arc;
 
     use beacon_plugin_sdk::datafusion::arrow::array::RecordBatch;
-    use beacon_plugin_sdk::datafusion::arrow::compute::concat_batches;
+    use beacon_plugin_sdk::datafusion::arrow::compute::{
+        SortColumn, SortOptions, concat_batches, lexsort_to_indices, take_record_batch,
+    };
     use beacon_plugin_sdk::datafusion::arrow::datatypes::{Schema, SchemaRef};
-    use beacon_plugin_sdk::file_format::{FormatFactory, FormatReader, OutputKind, ScanRequest};
+    use beacon_plugin_sdk::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use beacon_plugin_sdk::file_format::{
+        FormatFactory, FormatReader, OutputKind, ScanRequest, WriteRequest,
+    };
     use beacon_plugin_sdk::object_store::store::memory::InMemory;
     use beacon_plugin_sdk::object_store::store::path::Path;
     use beacon_plugin_sdk::object_store::store::{ObjectMeta, ObjectStore, ObjectStoreExt};
@@ -143,6 +236,7 @@ mod tests {
 
     use super::OdvFormat;
     use crate::reader::AsyncOdvDecoder;
+    use crate::writer::{ColumnInfo, OdvOptions};
 
     const TEST_FILE: &[u8] = include_bytes!("../testdata/test_file.txt");
     const TEST_FILE_ZST: &[u8] = include_bytes!("../testdata/test_file.txt.zst");
@@ -290,5 +384,158 @@ mod tests {
         ))
         .await;
         assert!(result.is_ok(), "infer_schema panicked");
+    }
+
+    fn column(name: &str) -> ColumnInfo {
+        ColumnInfo {
+            column_name: name.to_string(),
+            comment: None,
+            significant_digits: None,
+            qf_column: None,
+            units: None,
+        }
+    }
+
+    /// The field of `schema` with the name `prefix`, else the first one that starts with it.
+    fn named(schema: &Schema, prefix: &str) -> String {
+        let fields = schema.fields();
+        fields
+            .iter()
+            .find(|f| f.name() == prefix)
+            .or_else(|| fields.iter().find(|f| f.name().starts_with(prefix)))
+            .unwrap()
+            .name()
+            .clone()
+    }
+
+    /// Write options that match the columns of the test file.
+    fn test_file_options(schema: &Schema) -> OdvOptions {
+        let core = ["Cruise", "Longitude", "Latitude", "Depth", "yyyy"]
+            .map(|prefix| named(schema, prefix));
+        let data_columns = schema
+            .fields()
+            .iter()
+            .filter(|f| f.data_type().is_numeric() && !core.contains(f.name()))
+            .map(|f| column(f.name()))
+            .collect();
+        OdvOptions {
+            key_column: core[0].clone(),
+            longitude_column: column(&core[1]),
+            latitude_column: column(&core[2]),
+            depth_column: column(&core[3]),
+            time_column: column(&core[4]),
+            data_columns,
+            meta_columns: vec![],
+            ..OdvOptions::default()
+        }
+    }
+
+    fn with_options(options: &OdvOptions) -> HashMap<String, String> {
+        HashMap::from([("odv_options".to_string(), serde_json::to_string(options).unwrap())])
+    }
+
+    /// All rows of the test file, sorted as `writer` asks.
+    async fn sorted_test_file(writer: &Arc<dyn FormatReader>) -> (SchemaRef, RecordBatch) {
+        let (schema, all) = decoded(TEST_FILE).await;
+        let keys = writer.write_ordering(schema.clone()).unwrap();
+        let columns: Vec<SortColumn> = keys
+            .iter()
+            .map(|key| SortColumn {
+                values: all.column_by_name(&key.column).unwrap().clone(),
+                options: Some(SortOptions { descending: key.descending, nulls_first: key.nulls_first }),
+            })
+            .collect();
+        let indices = lexsort_to_indices(&columns, None).unwrap();
+        let sorted = take_record_batch(&all, &indices).unwrap();
+        (schema, sorted)
+    }
+
+    async fn write(
+        writer: &Arc<dyn FormatReader>,
+        store: &Arc<dyn ObjectStore>,
+        schema: SchemaRef,
+        batch: RecordBatch,
+    ) -> beacon_plugin_sdk::datafusion::error::Result<u64> {
+        let input = Box::pin(RecordBatchStreamAdapter::new(
+            schema.clone(),
+            futures::stream::iter(vec![Ok(batch)]),
+        ));
+        let request = WriteRequest {
+            path: Path::from("out.zip"),
+            schema,
+            local_path: None,
+        };
+        writer.write(Arc::clone(store), request, input).await
+    }
+
+    #[test]
+    fn factory_can_write_zip() {
+        assert!(OdvFormat.can_write());
+        assert!(!OdvFormat.split_output());
+        assert_eq!(OdvFormat.content_type(), "application/zip");
+    }
+
+    #[test]
+    fn invalid_odv_options_is_an_error() {
+        let options = HashMap::from([("odv_options".to_string(), "{not json".to_string())]);
+        let error = OdvFormat.create(&options).err().expect("an error");
+        assert!(error.to_string().contains("odv_options"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn write_ordering_uses_key_time_depth() {
+        let (schema, _) = decoded(TEST_FILE).await;
+        let writer = OdvFormat.create(&with_options(&test_file_options(&schema))).unwrap();
+        let keys = writer.write_ordering(schema).unwrap();
+        let columns: Vec<&str> = keys.iter().map(|k| k.column.as_str()).collect();
+        assert_eq!(columns, ["Cruise", "yyyy-mm-ddThh:mm:ss.sss", "Depth"]);
+        assert!(keys.iter().all(|k| !k.descending));
+    }
+
+    #[tokio::test]
+    async fn write_with_options_gives_a_zip_with_all_rows() {
+        let (schema, _) = decoded(TEST_FILE).await;
+        let writer = OdvFormat.create(&with_options(&test_file_options(&schema))).unwrap();
+        let (schema, sorted) = sorted_test_file(&writer).await;
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let written = write(&writer, &store, schema, sorted).await.unwrap();
+        assert_eq!(written, TEST_FILE_ROWS as u64);
+
+        let archive = store.get(&Path::from("out.zip")).await.unwrap().bytes().await.unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive.to_vec())).unwrap();
+        let mut data_lines = 0;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index).unwrap();
+            assert!(entry.name().ends_with(".txt"), "{}", entry.name());
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
+            // One header line, then one line per row.
+            let lines = text.lines().filter(|l| !l.starts_with("//") && !l.is_empty()).count();
+            data_lines += lines.saturating_sub(1);
+        }
+        assert_eq!(data_lines, TEST_FILE_ROWS);
+    }
+
+    #[tokio::test]
+    async fn write_without_options_does_not_panic() {
+        let writer = OdvFormat.create(&HashMap::new()).unwrap();
+        let (schema, all) = decoded(TEST_FILE).await;
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(write(
+            &writer, &store, schema, all,
+        )))
+        .await;
+        let result = result.expect("write panicked");
+        println!("write without odv_options: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn unknown_option_column_is_an_error() {
+        let (schema, all) = decoded(TEST_FILE).await;
+        let options = OdvOptions { key_column: "NoSuchColumn".to_string(), ..test_file_options(&schema) };
+        let writer = OdvFormat.create(&with_options(&options)).unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        assert!(write(&writer, &store, schema, all).await.is_err());
+        assert!(store.head(&Path::from("out.zip")).await.is_err());
     }
 }
