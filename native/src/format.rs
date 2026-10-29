@@ -116,13 +116,20 @@ async fn byte_stream(
     Ok(stream.map_err(std::io::Error::other))
 }
 
-async fn schema_mapper(store: &Arc<dyn ObjectStore>, object: &ObjectMeta) -> Result<OdvSchemaMapper> {
+async fn schema_mapper(
+    store: &Arc<dyn ObjectStore>,
+    object: &ObjectMeta,
+) -> Result<OdvSchemaMapper> {
     Ok(AsyncOdvDecoder::decode_schema_mapper(byte_stream(store, object).await?).await?)
 }
 
 #[async_trait]
 impl FormatReader for OdvReader {
-    async fn infer_schema(&self, store: Arc<dyn ObjectStore>, object: &ObjectMeta) -> Result<SchemaRef> {
+    async fn infer_schema(
+        &self,
+        store: Arc<dyn ObjectStore>,
+        object: &ObjectMeta,
+    ) -> Result<SchemaRef> {
         Ok(schema_mapper(&store, object).await?.output_schema())
     }
 
@@ -221,7 +228,7 @@ mod tests {
 
     use beacon_plugin_sdk::datafusion::arrow::array::RecordBatch;
     use beacon_plugin_sdk::datafusion::arrow::compute::{
-        SortColumn, SortOptions, concat_batches, lexsort_to_indices, take_record_batch,
+        concat_batches, lexsort_to_indices, take_record_batch, SortColumn, SortOptions,
     };
     use beacon_plugin_sdk::datafusion::arrow::datatypes::{Schema, SchemaRef};
     use beacon_plugin_sdk::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -255,19 +262,24 @@ mod tests {
         OdvFormat.create(&HashMap::new()).unwrap()
     }
 
-    fn one_chunk(bytes: &[u8]) -> futures::stream::Iter<std::vec::IntoIter<std::io::Result<Bytes>>> {
+    fn one_chunk(
+        bytes: &[u8],
+    ) -> futures::stream::Iter<std::vec::IntoIter<std::io::Result<Bytes>>> {
         futures::stream::iter(vec![Ok(Bytes::copy_from_slice(bytes))])
     }
 
     /// The schema and all rows that the copied decoder gives for `bytes`.
     async fn decoded(bytes: &[u8]) -> (SchemaRef, RecordBatch) {
-        let mapper = AsyncOdvDecoder::decode_schema_mapper(one_chunk(bytes)).await.unwrap();
-        let schema = mapper.output_schema();
-        let batches: Vec<RecordBatch> = AsyncOdvDecoder::decode(one_chunk(bytes), None, Arc::new(mapper))
-            .await
-            .try_collect()
+        let mapper = AsyncOdvDecoder::decode_schema_mapper(one_chunk(bytes))
             .await
             .unwrap();
+        let schema = mapper.output_schema();
+        let batches: Vec<RecordBatch> =
+            AsyncOdvDecoder::decode(one_chunk(bytes), None, Arc::new(mapper))
+                .await
+                .try_collect()
+                .await
+                .unwrap();
         let all = concat_batches(&schema, &batches).unwrap();
         (schema, all)
     }
@@ -340,7 +352,12 @@ mod tests {
         ]);
         let batches = opened("test_file.txt", TEST_FILE, Arc::new(wanted)).await;
         for batch in &batches {
-            let names: Vec<&str> = batch.schema_ref().fields().iter().map(|f| f.name().as_str()).collect();
+            let names: Vec<&str> = batch
+                .schema_ref()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
             assert_eq!(names, ["Station", "Cruise"]);
         }
         assert_eq!(rows(&batches), TEST_FILE_ROWS);
@@ -364,7 +381,12 @@ mod tests {
         let (store, object) = stored("empty.txt", header_only.as_bytes()).await;
         let schema = reader().infer_schema(store, &object).await.unwrap();
         let (full, _) = decoded(TEST_FILE).await;
-        let names = |s: &Schema| s.fields().iter().map(|f| f.name().clone()).collect::<Vec<_>>();
+        let names = |s: &Schema| {
+            s.fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(&schema), names(&full));
         let batches = opened("empty.txt", header_only.as_bytes(), schema).await;
         assert_eq!(rows(&batches), 0);
@@ -431,7 +453,10 @@ mod tests {
     }
 
     fn with_options(options: &OdvOptions) -> HashMap<String, String> {
-        HashMap::from([("odv_options".to_string(), serde_json::to_string(options).unwrap())])
+        HashMap::from([(
+            "odv_options".to_string(),
+            serde_json::to_string(options).unwrap(),
+        )])
     }
 
     /// All rows of the test file, sorted as `writer` asks.
@@ -442,7 +467,10 @@ mod tests {
             .iter()
             .map(|key| SortColumn {
                 values: all.column_by_name(&key.column).unwrap().clone(),
-                options: Some(SortOptions { descending: key.descending, nulls_first: key.nulls_first }),
+                options: Some(SortOptions {
+                    descending: key.descending,
+                    nulls_first: key.nulls_first,
+                }),
             })
             .collect();
         let indices = lexsort_to_indices(&columns, None).unwrap();
@@ -485,7 +513,9 @@ mod tests {
     #[tokio::test]
     async fn write_ordering_uses_key_time_depth() {
         let (schema, _) = decoded(TEST_FILE).await;
-        let writer = OdvFormat.create(&with_options(&test_file_options(&schema))).unwrap();
+        let writer = OdvFormat
+            .create(&with_options(&test_file_options(&schema)))
+            .unwrap();
         let keys = writer.write_ordering(schema).unwrap();
         let columns: Vec<&str> = keys.iter().map(|k| k.column.as_str()).collect();
         assert_eq!(columns, ["Cruise", "yyyy-mm-ddThh:mm:ss.sss", "Depth"]);
@@ -495,13 +525,21 @@ mod tests {
     #[tokio::test]
     async fn write_with_options_gives_a_zip_with_all_rows() {
         let (schema, _) = decoded(TEST_FILE).await;
-        let writer = OdvFormat.create(&with_options(&test_file_options(&schema))).unwrap();
+        let writer = OdvFormat
+            .create(&with_options(&test_file_options(&schema)))
+            .unwrap();
         let (schema, sorted) = sorted_test_file(&writer).await;
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let written = write(&writer, &store, schema, sorted).await.unwrap();
         assert_eq!(written, TEST_FILE_ROWS as u64);
 
-        let archive = store.get(&Path::from("out.zip")).await.unwrap().bytes().await.unwrap();
+        let archive = store
+            .get(&Path::from("out.zip"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive.to_vec())).unwrap();
         let mut data_lines = 0;
         for index in 0..zip.len() {
@@ -510,7 +548,10 @@ mod tests {
             let mut text = String::new();
             std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
             // One header line, then one line per row.
-            let lines = text.lines().filter(|l| !l.starts_with("//") && !l.is_empty()).count();
+            let lines = text
+                .lines()
+                .filter(|l| !l.starts_with("//") && !l.is_empty())
+                .count();
             data_lines += lines.saturating_sub(1);
         }
         assert_eq!(data_lines, TEST_FILE_ROWS);
@@ -532,7 +573,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_option_column_is_an_error() {
         let (schema, all) = decoded(TEST_FILE).await;
-        let options = OdvOptions { key_column: "NoSuchColumn".to_string(), ..test_file_options(&schema) };
+        let options = OdvOptions {
+            key_column: "NoSuchColumn".to_string(),
+            ..test_file_options(&schema)
+        };
         let writer = OdvFormat.create(&with_options(&options)).unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         assert!(write(&writer, &store, schema, all).await.is_err());

@@ -1,5 +1,5 @@
-use beacon_plugin_sdk::datafusion::arrow;
 use arrow::error::ArrowError;
+use beacon_plugin_sdk::datafusion::arrow;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OdvError {

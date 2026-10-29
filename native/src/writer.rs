@@ -1,24 +1,18 @@
 use beacon_plugin_sdk::datafusion::arrow;
-use core::time;
 use std::{
-    collections::HashMap,
     fs::File,
     io::{Read, Seek, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
 use arrow::{
-    array::{
-        Array, ArrayRef, ArrowPrimitiveType, AsArray, PrimitiveArray, RecordBatch, Scalar,
-        StringArray, StringBuilder,
-    },
+    array::{Array, ArrayRef, AsArray, RecordBatch, Scalar, StringArray, StringBuilder},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use async_zip::{base::write::ZipFileWriter, ZipEntryBuilder};
 use futures::{AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use serde::{Deserialize, Serialize};
-use tempfile::TempDir;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use walkdir::WalkDir;
@@ -150,38 +144,38 @@ impl OdvOptions {
             .collect();
 
         for (column, field) in &columns {
-            if !column.ends_with("_qc") && !column.ends_with("_qf") {
-                if column != &options.depth_column.column_name.to_lowercase()
-                    && column != &options.time_column.column_name.to_lowercase()
-                    && column != &options.latitude_column.column_name.to_lowercase()
-                    && column != &options.longitude_column.column_name.to_lowercase()
-                    && column != &options.key_column.to_lowercase()
-                {
-                    // Assume its a metadata column
-                    let mut column_info = ColumnInfo {
-                        column_name: field.name().clone(),
-                        comment: None,
-                        significant_digits: None,
-                        qf_column: None,
-                        units: None,
-                    };
+            if !column.ends_with("_qc")
+                && !column.ends_with("_qf")
+                && column != &options.depth_column.column_name.to_lowercase()
+                && column != &options.time_column.column_name.to_lowercase()
+                && column != &options.latitude_column.column_name.to_lowercase()
+                && column != &options.longitude_column.column_name.to_lowercase()
+                && column != &options.key_column.to_lowercase()
+            {
+                // Assume its a metadata column
+                let mut column_info = ColumnInfo {
+                    column_name: field.name().clone(),
+                    comment: None,
+                    significant_digits: None,
+                    qf_column: None,
+                    units: None,
+                };
 
-                    //Check if we can find a quality flag column for this data column
-                    let expected_qf_col_names =
-                        vec![format!("{}_qf", column), format!("{}_qc", column)];
+                //Check if we can find a quality flag column for this data column
+                let expected_qf_col_names =
+                    vec![format!("{}_qf", column), format!("{}_qc", column)];
 
-                    for qf_col_name in expected_qf_col_names {
-                        if let Some(qf_field) = columns.get(&qf_col_name) {
-                            column_info.qf_column = Some(qf_field.name().to_string());
-                            break;
-                        }
+                for qf_col_name in expected_qf_col_names {
+                    if let Some(qf_field) = columns.get(&qf_col_name) {
+                        column_info.qf_column = Some(qf_field.name().to_string());
+                        break;
                     }
+                }
 
-                    if column_info.qf_column.is_some() {
-                        options.data_columns.push(column_info);
-                    } else {
-                        options.meta_columns.push(column_info);
-                    }
+                if column_info.qf_column.is_some() {
+                    options.data_columns.push(column_info);
+                } else {
+                    options.meta_columns.push(column_info);
                 }
             }
         }
@@ -710,6 +704,7 @@ impl<W: AsyncWrite + Unpin + Send> AsyncOdvWriter<W> {
         Ok(types.pop().unwrap_or(OdvBatchType::Profile(batch))) // Default to Profile
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn classify_batch_feature_type(
         batch: RecordBatch,
         feature_type_columns: &str,
@@ -718,7 +713,7 @@ impl<W: AsyncWrite + Unpin + Send> AsyncOdvWriter<W> {
         time_column_name: &str,
         key_column: &str,
         profile_file_state: &mut Option<FileWriterState>,
-        time_series_file_state: &mut Option<FileWriterState>,
+        _time_series_file_state: &mut Option<FileWriterState>,
     ) -> anyhow::Result<Option<OdvBatchType>> {
         let feature_array = batch.column_by_name(feature_type_columns).ok_or_else(|| {
             anyhow::anyhow!(
@@ -772,7 +767,7 @@ impl<W: AsyncWrite + Unpin + Send> AsyncOdvWriter<W> {
                 .ranges();
 
                 let mut trajectory_profiles = vec![];
-                for (i, range) in partitions.iter().enumerate() {
+                for range in partitions.iter() {
                     let profile = batch.slice(range.start, range.end - range.start);
 
                     // Map the key column of the profile record batch to the key_name[+i] format
@@ -1082,7 +1077,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                         .expect("")
                         .data_type()
                 )?,
-                &options.longitude_column.comment.as_deref().unwrap_or("")
+                options.longitude_column.comment.as_deref().unwrap_or("")
             )
         )?;
         //Write latitude column
@@ -1098,7 +1093,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                         .expect("")
                         .data_type()
                 )?,
-                &options.latitude_column.comment.as_deref().unwrap_or("")
+                options.latitude_column.comment.as_deref().unwrap_or("")
             )
         )?;
 
@@ -1124,10 +1119,10 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                 writer,
                 "{}",
                 Self::meta_header(
-                    &output_schema.field(inverse_proj_index).name(),
+                    output_schema.field(inverse_proj_index).name(),
                     &options.qf_schema,
                     &value_type,
-                    &column.comment.as_deref().unwrap_or("")
+                    column.comment.as_deref().unwrap_or("")
                 )
             )?;
         }
@@ -1149,7 +1144,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                     writer,
                     "{}",
                     Self::primary_data_header(
-                        &output_schema.field(inverse_proj_index).name(),
+                        output_schema.field(inverse_proj_index).name(),
                         &options.qf_schema,
                         &Self::arrow_to_value_type(
                             input_schema
@@ -1157,7 +1152,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                                 .expect("")
                                 .data_type()
                         )?,
-                        &options.depth_column.comment.as_deref().unwrap_or(""),
+                        options.depth_column.comment.as_deref().unwrap_or(""),
                         "T"
                     )
                 )?;
@@ -1194,7 +1189,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                     writer,
                     "{}",
                     Self::primary_data_header(
-                        &output_schema.field(inverse_proj_index).name(),
+                        output_schema.field(inverse_proj_index).name(),
                         &options.qf_schema,
                         &Self::arrow_to_value_type(
                             input_schema
@@ -1202,7 +1197,7 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                                 .expect("")
                                 .data_type()
                         )?,
-                        &options.depth_column.comment.as_deref().unwrap_or(""),
+                        options.depth_column.comment.as_deref().unwrap_or(""),
                         "F"
                     )
                 )?;
@@ -1248,10 +1243,10 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
                 writer,
                 "{}",
                 Self::data_header(
-                    &output_schema.field(inverse_proj_index).name(),
+                    output_schema.field(inverse_proj_index).name(),
                     &options.qf_schema,
                     &value_type,
-                    &column.comment.as_deref().unwrap_or("")
+                    column.comment.as_deref().unwrap_or("")
                 )
             )?;
         }
@@ -1296,15 +1291,13 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
     /// * `value_type` - ODV value type
     /// * `comment` - Optional comment about the variable
     fn data_header(label: &str, qf_schema: &str, value_type: &str, comment: &str) -> String {
-        const GENERIC_DATA_HEADER : &'static str = "//<DataVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\" </DataVariable>";
+        const GENERIC_DATA_HEADER : &str = "//<DataVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\" </DataVariable>";
 
-        let header = GENERIC_DATA_HEADER
+        GENERIC_DATA_HEADER
             .replace("$LABEL", label)
             .replace("$VALUE_TYPE", value_type)
             .replace("$QF_SCHEMA", qf_schema)
-            .replace("$COMMENT", comment);
-
-        header
+            .replace("$COMMENT", comment)
     }
 
     /// Generates the ODV header for a data variable
@@ -1321,16 +1314,14 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
         comment: &str,
         primary_variable: &str,
     ) -> String {
-        const GENERIC_DATA_HEADER : &'static str = "//<DataVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\" is_primary_variable=\"$PRIMARY_VARIABLE\" </DataVariable>";
+        const GENERIC_DATA_HEADER : &str = "//<DataVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\" is_primary_variable=\"$PRIMARY_VARIABLE\" </DataVariable>";
 
-        let header = GENERIC_DATA_HEADER
+        GENERIC_DATA_HEADER
             .replace("$LABEL", label)
             .replace("$VALUE_TYPE", value_type)
             .replace("$QF_SCHEMA", qf_schema)
             .replace("$COMMENT", comment)
-            .replace("$PRIMARY_VARIABLE", primary_variable);
-
-        header
+            .replace("$PRIMARY_VARIABLE", primary_variable)
     }
 
     /// Generates the ODV header for a metadata variable
@@ -1341,15 +1332,13 @@ impl<T: OdvType, W: Write> OdvFile<T, W> {
     /// * `value_type` - ODV value type
     /// * `comment` - Optional comment about the variable
     fn meta_header(label: &str, qf_schema: &str, value_type: &str, comment: &str) -> String {
-        const GENERIC_META_HEADER: &'static str = "//<MetaVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\"</MetaVariable>";
+        const GENERIC_META_HEADER: &str = "//<MetaVariable> label=\"$LABEL\" value_type=\"$VALUE_TYPE\" qf_schema=\"$QF_SCHEMA\" comment=\"$COMMENT\"</MetaVariable>";
 
-        let header = GENERIC_META_HEADER
+        GENERIC_META_HEADER
             .replace("$LABEL", label)
             .replace("$QF_SCHEMA", qf_schema)
             .replace("$VALUE_TYPE", value_type)
-            .replace("$COMMENT", comment);
-
-        header
+            .replace("$COMMENT", comment)
     }
 
     /// Writes a record batch to the ODV file
@@ -1451,7 +1440,7 @@ pub trait OdvType {
 pub struct Profiles;
 impl OdvType for Profiles {
     fn type_header() -> String {
-        format!("//<DataType>Profiles</DataType>")
+        "//<DataType>Profiles</DataType>".to_string()
     }
     fn file_type() -> OdvFileType {
         OdvFileType::Profiles
@@ -1462,7 +1451,7 @@ impl OdvType for Profiles {
 pub struct TimeSeries;
 impl OdvType for TimeSeries {
     fn type_header() -> String {
-        format!("//<DataType>TimeSeries</DataType>")
+        "//<DataType>TimeSeries</DataType>".to_string()
     }
     fn file_type() -> OdvFileType {
         OdvFileType::TimeSeries
@@ -1476,7 +1465,7 @@ impl OdvType for Trajectories {
         OdvFileType::Trajectories
     }
     fn type_header() -> String {
-        format!("//<DataType>Trajectories</DataType>")
+        "//<DataType>Trajectories</DataType>".to_string()
     }
 
     fn map_station(record_batch: RecordBatch) -> RecordBatch {
@@ -1498,7 +1487,7 @@ impl OdvType for Trajectories {
 pub struct Error;
 impl OdvType for Error {
     fn type_header() -> String {
-        format!("//<DataType>Error</DataType>")
+        "//<DataType>Error</DataType>".to_string()
     }
     fn file_type() -> OdvFileType {
         OdvFileType::Profiles
@@ -1818,20 +1807,27 @@ mod tests {
     #[tokio::test]
     async fn a_written_profile_reads_back_with_its_declared_types() {
         let schema = user_input_schema();
-        let profile = write_and_extract(schema.clone(), user_input_batch(&schema), "profile.txt").await;
+        let profile =
+            write_and_extract(schema.clone(), user_input_batch(&schema), "profile.txt").await;
 
-        let stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from(profile))]);
+        let stream =
+            futures::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from(profile))]);
         let mapper = crate::reader::AsyncOdvDecoder::decode_schema_mapper(stream)
             .await
             .expect("the written file should parse");
         let read_schema = mapper.output_schema();
 
-        let depth = read_schema.field_with_name("Depth").expect("the depth column");
+        let depth = read_schema
+            .field_with_name("Depth")
+            .expect("the depth column");
         assert_eq!(depth.data_type(), &DataType::Float32, "declared FLOAT");
         let time = read_schema
             .field_with_name("yyyy-mm-ddThh:mm:ss.sss")
             .expect("the ODV time column");
-        assert!(matches!(time.data_type(), DataType::Timestamp(_, _)), "{time:?}");
+        assert!(
+            matches!(time.data_type(), DataType::Timestamp(_, _)),
+            "{time:?}"
+        );
     }
 
     /// Parquet written by pandas or pyarrow holds `LargeUtf8` strings. The writer takes them.
@@ -1874,7 +1870,10 @@ mod tests {
             .expect("profile.txt")
             .read_to_string(&mut profile)
             .unwrap();
-        assert!(profile.lines().any(|line| line.starts_with("c1\t")), "{profile}");
+        assert!(
+            profile.lines().any(|line| line.starts_with("c1\t")),
+            "{profile}"
+        );
     }
 
     #[test]
@@ -2186,8 +2185,7 @@ mod tests {
         ));
 
         // A single, unvarying row defaults to Profile.
-        let single =
-            classify_batch_fixture(vec![1.0], vec![2.0], vec!["t0"], vec![10.0]);
+        let single = classify_batch_fixture(vec![1.0], vec![2.0], vec!["t0"], vec![10.0]);
         assert!(matches!(
             W::classify_batch(single, &opts, &mut None, &mut None).unwrap(),
             OdvBatchType::Profile(_)
@@ -2212,8 +2210,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let err = W::classify_batch(batch, &OdvOptions::default(), &mut None, &mut None)
-            .unwrap_err();
+        let err =
+            W::classify_batch(batch, &OdvOptions::default(), &mut None, &mut None).unwrap_err();
         assert!(err.to_string().contains("Longitude column"));
     }
 
@@ -2243,8 +2241,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut opts = OdvOptions::default();
-        opts.feature_type_column = Some("featureType".to_string());
+        let opts = OdvOptions {
+            feature_type_column: Some("featureType".to_string()),
+            ..OdvOptions::default()
+        };
         assert!(matches!(
             W::classify_batch(batch, &opts, &mut None, &mut None).unwrap(),
             OdvBatchType::TimeSeries(_)
@@ -2271,10 +2271,7 @@ mod tests {
 
         assert_eq!(opts.data_columns.len(), 1);
         assert_eq!(opts.data_columns[0].column_name, "oxygen");
-        assert_eq!(
-            opts.data_columns[0].qf_column.as_deref(),
-            Some("oxygen_qc")
-        );
+        assert_eq!(opts.data_columns[0].qf_column.as_deref(), Some("oxygen_qc"));
         // No stray metadata columns: the core ODV columns are all excluded.
         assert!(
             opts.meta_columns.is_empty(),

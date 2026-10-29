@@ -11,7 +11,7 @@ use bytes::{Buf, Bytes};
 use csv::StringRecord;
 use futures::{Stream, StreamExt, TryStreamExt};
 use indexmap::IndexMap;
-use object_store::{ObjectStore, ObjectStoreExt};
+use object_store::ObjectStoreExt;
 use regex::Regex;
 use tokio_util::codec::FramedRead;
 
@@ -282,7 +282,7 @@ impl AsyncOdvDecoder {
             s
         }
 
-        for (_, name) in header.iter().enumerate() {
+        for name in header.iter() {
             let name = remove_units(name);
             if let Some(field) = discovered_fields.get(name) {
                 if name.to_lowercase() == "time_iso8601" {
@@ -485,9 +485,9 @@ mod tests {
 
 #[cfg(test)]
 mod unit_tests {
+    use super::*;
     #[allow(unused_imports)]
     use super::{arrow, object_store};
-    use super::*;
 
     #[test]
     fn schema_mapper_orders_metadata_columns_by_key() {
@@ -503,7 +503,10 @@ mod unit_tests {
             .iter()
             .map(|f| f.name().clone())
             .collect();
-        assert_eq!(names, ["x", "x.a", "x.b", "x.c", "x.d", "x.e", "x.f", "x.g", "x.h"]);
+        assert_eq!(
+            names,
+            ["x", "x.a", "x.b", "x.c", "x.d", "x.e", "x.f", "x.g", "x.h"]
+        );
     }
 
     #[test]
@@ -525,9 +528,18 @@ mod unit_tests {
         // Units in brackets are stripped from the name and stored as metadata.
         assert_eq!(field.name(), "Longitude");
         assert_eq!(field.data_type(), &DataType::Float32);
-        assert_eq!(field.metadata().get("units").map(|s| s.as_str()), Some("degrees east"));
-        assert_eq!(field.metadata().get("qf_schema").map(|s| s.as_str()), Some("SEADATANET"));
-        assert_eq!(field.metadata().get("comment").map(|s| s.as_str()), Some("pos"));
+        assert_eq!(
+            field.metadata().get("units").map(|s| s.as_str()),
+            Some("degrees east")
+        );
+        assert_eq!(
+            field.metadata().get("qf_schema").map(|s| s.as_str()),
+            Some("SEADATANET")
+        );
+        assert_eq!(
+            field.metadata().get("comment").map(|s| s.as_str()),
+            Some("pos")
+        );
     }
 
     #[test]
@@ -563,8 +575,10 @@ mod unit_tests {
 
         let batch = RecordBatch::try_new(
             input.clone(),
-            vec![Arc::new(arrow::array::Float32Array::from(vec![1.0_f32, 2.0]))
-                as Arc<dyn arrow::array::Array>],
+            vec![
+                Arc::new(arrow::array::Float32Array::from(vec![1.0_f32, 2.0]))
+                    as Arc<dyn arrow::array::Array>,
+            ],
         )
         .unwrap();
         let mapped = mapper.map_batch(batch, None).unwrap();
