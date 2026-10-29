@@ -63,22 +63,24 @@ The table option `odv_options` sets the write options as JSON:
 
 ```sql
 CREATE EXTERNAL TABLE out STORED AS ODV LOCATION 'out/'
-OPTIONS ('odv_options' '{"key_column": "Cruise", ...}');
+OPTIONS ('odv_options' '{"key_column": "Cruise", "qf_schema": "SEADATANET", ...}');
 ```
 
-| Field | Default | Contents |
+The JSON must have all the required fields:
+
+| Field | Required | Contents |
 | --- | --- | --- |
-| `longitude_column` | `Longitude [degrees east]` | The longitude column |
-| `latitude_column` | `Latitude [degrees north]` | The latitude column |
-| `depth_column` | `Depth [m]` | The depth or pressure column |
-| `time_column` | `yyyy-MM-ddTHH:mm:ss.SSS` | The time column |
-| `key_column` | `Cruise` | The column that identifies a cruise or deployment |
-| `qf_schema` | `SEADATANET` | The quality flag schema |
-| `data_columns` | none | The data columns |
-| `meta_columns` | none | The metadata columns. The alias is `metadata_columns`. |
-| `feature_type_column` | none | A column that sets the ODV type of each row |
-| `archiving` | `ZipStd` | `ZipStd` or `zip_deflate` |
-| `compression` | `Deflate` | `Stored`, `Deflate` or `Zstd` |
+| `longitude_column` | yes | The longitude column |
+| `latitude_column` | yes | The latitude column |
+| `depth_column` | yes | The depth or pressure column |
+| `time_column` | yes | The time column |
+| `key_column` | yes | The column that identifies a cruise or deployment |
+| `qf_schema` | yes | The quality flag schema, for example `SEADATANET` |
+| `data_columns` | yes | The data columns. Can be empty. |
+| `meta_columns` | yes | The metadata columns. Can be empty. The alias is `metadata_columns`. |
+| `feature_type_column` | no | A column that sets the ODV type of each row |
+| `archiving` | no | `ZipStd` (default) or `zip_deflate` |
+| `compression` | no | `Stored`, `Deflate` (default) or `Zstd` |
 
 Each column field is an object:
 
@@ -91,7 +93,8 @@ Each column field is an object:
 | `units` | The units. The alias is `unit`. |
 
 Without `odv_options`, the writer finds the options from the column names.
-The writer then looks for the default time column name. A table read from an ODV file has the time column `yyyy-mm-ddThh:mm:ss.sss`.
+It uses these default names: `Longitude [degrees east]`, `Latitude [degrees north]`, `Depth [m]`, `yyyy-MM-ddTHH:mm:ss.SSS` and `Cruise`.
+A table read from an ODV file has the time column `yyyy-mm-ddThh:mm:ss.sss`.
 So set `odv_options` when you write data that came from ODV files.
 
 The writer sorts the rows by the key column, the time column and the depth column.

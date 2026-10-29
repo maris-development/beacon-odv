@@ -13,7 +13,6 @@ use arrow::{
 use async_zip::{base::write::ZipFileWriter, ZipEntryBuilder};
 use futures::{AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use serde::{Deserialize, Serialize};
-use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use walkdir::WalkDir;
 use zip::write::FileOptions;
@@ -457,16 +456,16 @@ impl<W: AsyncWrite + Unpin + Send> AsyncOdvWriter<W> {
     /// Result containing path to created archive or error if archival fails
     pub async fn finish(mut self) -> anyhow::Result<W> {
         // Process each odv into the zip file by copying over the bytes
-        let mut profiles = tokio::fs::File::from_std(self.profile_file.finish()?).compat();
-        let mut timeseries = tokio::fs::File::from_std(self.timeseries_file.finish()?).compat();
-        let mut trajectories = tokio::fs::File::from_std(self.trajectory_file.finish()?).compat();
-        let mut errors = tokio::fs::File::from_std(self.error_file.finish()?).compat();
+        let mut profiles = futures::io::AllowStdIo::new(self.profile_file.finish()?);
+        let mut timeseries = futures::io::AllowStdIo::new(self.timeseries_file.finish()?);
+        let mut trajectories = futures::io::AllowStdIo::new(self.trajectory_file.finish()?);
+        let mut errors = futures::io::AllowStdIo::new(self.error_file.finish()?);
 
         // Move back file pointers to start
-        profiles.seek(std::io::SeekFrom::Start(0)).await?;
-        timeseries.seek(std::io::SeekFrom::Start(0)).await?;
-        trajectories.seek(std::io::SeekFrom::Start(0)).await?;
-        errors.seek(std::io::SeekFrom::Start(0)).await?;
+        AsyncSeekExt::seek(&mut profiles, std::io::SeekFrom::Start(0)).await?;
+        AsyncSeekExt::seek(&mut timeseries, std::io::SeekFrom::Start(0)).await?;
+        AsyncSeekExt::seek(&mut trajectories, std::io::SeekFrom::Start(0)).await?;
+        AsyncSeekExt::seek(&mut errors, std::io::SeekFrom::Start(0)).await?;
 
         let mut profile_writer = self
             .zip_file_writer

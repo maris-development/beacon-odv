@@ -1,6 +1,8 @@
 //! The `odv` file format of the plugin SDK.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,12 +15,12 @@ use beacon_plugin_sdk::datafusion::physical_plan::stream::RecordBatchStreamAdapt
 use beacon_plugin_sdk::file_format::{
     FormatFactory, FormatReader, OutputKind, ScanRequest, SortKey, WriteRequest,
 };
-use beacon_plugin_sdk::object_store::store::buffered::BufWriter;
 use beacon_plugin_sdk::object_store::store::path::Path;
-use beacon_plugin_sdk::object_store::store::{ObjectMeta, ObjectStore, ObjectStoreExt};
+use beacon_plugin_sdk::object_store::store::{
+    MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
+};
 use bytes::Bytes;
-use futures::{AsyncWrite, AsyncWriteExt, Stream, StreamExt, TryStreamExt};
-use tokio_util::compat::TokioAsyncWriteCompatExt;
+use futures::{Stream, StreamExt, TryStreamExt};
 
 use crate::reader::{AsyncOdvDecoder, OdvSchemaMapper};
 use crate::writer::{AsyncOdvWriter, OdvOptions};
@@ -196,12 +198,9 @@ impl FormatReader for OdvReader {
         mut input: SendableRecordBatchStream,
     ) -> Result<u64> {
         let options = self.write_options(&request.schema)?;
-        // The writer puts nothing in the target before `finish`, so an error leaves no object.
-        let target: Box<dyn AsyncWrite + Unpin + Send> = match &request.local_path {
-            Some(path) => Box::new(tokio::fs::File::create(path).await?.compat_write()),
-            None => Box::new(BufWriter::new(store, request.path.clone()).compat_write()),
-        };
-        let mut writer = AsyncOdvWriter::new_from_dyn(target, request.schema.clone(), options)
+        // Beacon gives no tokio runtime, so build the archive in a spool file with std I/O.
+        let spool = futures::io::AllowStdIo::new(tempfile::tempfile()?);
+        let mut writer = AsyncOdvWriter::new_from_dyn(spool, request.schema.clone(), options)
             .await
             .map_err(write_error)?;
         let mut rows = 0;
@@ -210,10 +209,62 @@ impl FormatReader for OdvReader {
             rows += batch.num_rows() as u64;
             writer.write(batch).await.map_err(write_error)?;
         }
-        let mut target = writer.finish().await.map_err(write_error)?;
-        target.close().await?;
+        let mut spool = writer.finish().await.map_err(write_error)?.into_inner();
+        spool.seek(SeekFrom::Start(0))?;
+        match &request.local_path {
+            Some(path) => copy_to(spool, path)?,
+            None => upload(&store, &request.path, spool, PART_SIZE).await?,
+        }
         Ok(rows)
     }
+}
+
+/// The size of one part of a multipart upload.
+const PART_SIZE: usize = 10 * 1024 * 1024;
+
+/// Copies `file` to `path`. On an error, removes `path`.
+fn copy_to(mut file: File, path: &std::path::Path) -> Result<()> {
+    let result = File::create(path).and_then(|mut target| std::io::copy(&mut file, &mut target));
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(path);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// Puts `file` at `path`. A file larger than `part_size` goes up in parts, one at a time.
+async fn upload(
+    store: &Arc<dyn ObjectStore>,
+    path: &Path,
+    mut file: File,
+    part_size: usize,
+) -> Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    if file.metadata()?.len() <= part_size as u64 {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        store.put(path, bytes.into()).await?;
+        return Ok(());
+    }
+    let mut parts = store.put_multipart(path).await?;
+    let result: Result<()> = async {
+        loop {
+            let mut part = Vec::with_capacity(part_size);
+            (&mut file).take(part_size as u64).read_to_end(&mut part)?;
+            if part.is_empty() {
+                break;
+            }
+            parts.put_part(part.into()).await?;
+        }
+        parts.complete().await?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        // A failed upload must not leave its parts in the store.
+        let _ = parts.abort().await;
+    }
+    result
 }
 
 /// The file formats of this plugin.
@@ -581,5 +632,120 @@ mod tests {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         assert!(write(&writer, &store, schema, all).await.is_err());
         assert!(store.head(&Path::from("out.zip")).await.is_err());
+    }
+
+    /// Writes `batch` through `writer`, to `out.zip` in `store` or to `local_path`.
+    async fn write_to(
+        writer: &Arc<dyn FormatReader>,
+        store: &Arc<dyn ObjectStore>,
+        schema: SchemaRef,
+        batch: RecordBatch,
+        local_path: Option<std::path::PathBuf>,
+    ) -> beacon_plugin_sdk::datafusion::error::Result<u64> {
+        let input = Box::pin(RecordBatchStreamAdapter::new(
+            schema.clone(),
+            futures::stream::iter(vec![Ok(batch)]),
+        ));
+        let request = WriteRequest {
+            path: Path::from("out.zip"),
+            schema,
+            local_path,
+        };
+        writer.write(Arc::clone(store), request, input).await
+    }
+
+    // Beacon polls plugin futures outside a tokio runtime, so these tests use a plain thread.
+    #[test]
+    fn read_runs_without_a_tokio_runtime() {
+        futures::executor::block_on(async {
+            let (store, object) = stored("test_file.txt.zst", TEST_FILE_ZST).await;
+            let schema = reader()
+                .infer_schema(Arc::clone(&store), &object)
+                .await
+                .unwrap();
+            let batches: Vec<RecordBatch> = reader()
+                .open(store, &object, request(schema))
+                .await
+                .unwrap()
+                .try_collect()
+                .await
+                .unwrap();
+            assert_eq!(rows(&batches), TEST_FILE_ROWS);
+        });
+    }
+
+    #[test]
+    fn write_runs_without_a_tokio_runtime() {
+        futures::executor::block_on(async {
+            let (schema, _) = decoded(TEST_FILE).await;
+            let writer = OdvFormat
+                .create(&with_options(&test_file_options(&schema)))
+                .unwrap();
+            let (schema, sorted) = sorted_test_file(&writer).await;
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            let written = write_to(&writer, &store, schema, sorted, None)
+                .await
+                .unwrap();
+            assert_eq!(written, TEST_FILE_ROWS as u64);
+            assert!(store.head(&Path::from("out.zip")).await.is_ok());
+        });
+    }
+
+    #[test]
+    fn local_path_write_gives_the_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.zip");
+        futures::executor::block_on(async {
+            let (schema, _) = decoded(TEST_FILE).await;
+            let writer = OdvFormat
+                .create(&with_options(&test_file_options(&schema)))
+                .unwrap();
+            let (schema, sorted) = sorted_test_file(&writer).await;
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            write_to(&writer, &store, schema, sorted, Some(path.clone()))
+                .await
+                .unwrap();
+            assert!(
+                store.head(&Path::from("out.zip")).await.is_err(),
+                "nothing in the store"
+            );
+        });
+        let zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(zip.len(), 4);
+    }
+
+    #[test]
+    fn local_path_write_leaves_no_file_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.zip");
+        futures::executor::block_on(async {
+            let (schema, all) = decoded(TEST_FILE).await;
+            let options = OdvOptions {
+                key_column: "NoSuchColumn".to_string(),
+                ..test_file_options(&schema)
+            };
+            let writer = OdvFormat.create(&with_options(&options)).unwrap();
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            assert!(write_to(&writer, &store, schema, all, Some(path.clone()))
+                .await
+                .is_err());
+        });
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn upload_in_parts_gives_the_same_bytes() {
+        let bytes: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+        let mut file = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut file, &bytes).unwrap();
+        futures::executor::block_on(async {
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            let path = Path::from("big.zip");
+            super::upload(&store, &path, file, 256 * 1024)
+                .await
+                .unwrap();
+            let stored = store.get(&path).await.unwrap().bytes().await.unwrap();
+            assert_eq!(stored.as_ref(), bytes.as_slice());
+        });
     }
 }

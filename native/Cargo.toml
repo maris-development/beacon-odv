@@ -25,8 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.15.0"
 thiserror = "2.0.12"
-tokio = { version = "1.47.1", features = ["rt", "io-util", "fs", "macros"] }
-tokio-util = { version = "0.7.13", features = ["io", "compat", "codec"] }
+tokio-util = { version = "0.7.13", features = ["io", "codec"] }
 tracing = "0.1.41"
 walkdir = "2.5.0"
 # Without default features, the zip crate has no xz support. Only deflate is used.

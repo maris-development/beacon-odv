@@ -183,8 +183,11 @@ impl AsyncOdvDecoder {
 
         // Parse each header line
         for line in header_lines {
-            AsyncOdvDecoder::odv_field_from_header(&line)
-                .map(|f| fields.insert(f.name().to_string(), f));
+            let field = AsyncOdvDecoder::odv_field_from_header(&line)
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+            if let Some(f) = field {
+                fields.insert(f.name().to_string(), f);
+            }
         }
 
         // Parse header row
@@ -208,7 +211,7 @@ impl AsyncOdvDecoder {
         Self::decode_odv_body(input, projection.map(Into::into), schema_mapper)
     }
 
-    fn odv_field_from_header(line: &str) -> Option<Field> {
+    fn odv_field_from_header(line: &str) -> OdvResult<Option<Field>> {
         let re = Regex::new(
             r#"(?m)^//<(?:MetaVariable|DataVariable)>.*?label="([^"]+)".*?value_type="([^"]+)".*?qf_schema="([^"]+)".*?comment="([^"]*)".*?</(?:MetaVariable|DataVariable)>"#
         ).unwrap();
@@ -238,7 +241,7 @@ impl AsyncOdvDecoder {
 
             let field = Field::new(
                 field_name,
-                Self::value_type_to_arrow_type(value_type).unwrap(),
+                Self::value_type_to_arrow_type(value_type)?,
                 true,
             );
 
@@ -250,15 +253,17 @@ impl AsyncOdvDecoder {
                 metadata.insert("comment".to_string(), comment.to_string());
             }
 
-            return Some(field.with_metadata(metadata));
+            return Ok(Some(field.with_metadata(metadata)));
         }
 
-        None
+        Ok(None)
     }
 
     fn value_type_to_arrow_type(value_type: &str) -> OdvResult<DataType> {
         match value_type {
             "INDEXED_TEXT" => Ok(DataType::Utf8),
+            "BYTE" => Ok(DataType::Int8),
+            "SHORT" => Ok(DataType::Int16),
             "INTEGER" => Ok(DataType::Int64),
             "FLOAT" => Ok(DataType::Float32),
             "DOUBLE" => Ok(DataType::Float64),
@@ -510,6 +515,19 @@ mod unit_tests {
     }
 
     #[test]
+    fn byte_and_short_value_types_are_integers() {
+        let f = AsyncOdvDecoder::value_type_to_arrow_type;
+        assert_eq!(f("BYTE").unwrap(), DataType::Int8);
+        assert_eq!(f("SHORT").unwrap(), DataType::Int16);
+    }
+
+    #[test]
+    fn unknown_value_type_in_header_is_an_error() {
+        let line = r#"//<DataVariable> label="X" value_type="WEIRD" qf_schema="SEADATANET" comment="" </DataVariable>"#;
+        assert!(AsyncOdvDecoder::odv_field_from_header(line).is_err());
+    }
+
+    #[test]
     fn value_type_to_arrow_type_mapping() {
         let f = AsyncOdvDecoder::value_type_to_arrow_type;
         assert_eq!(f("INDEXED_TEXT").unwrap(), DataType::Utf8);
@@ -523,7 +541,9 @@ mod unit_tests {
     #[test]
     fn odv_field_from_header_extracts_name_units_and_metadata() {
         let line = r#"//<MetaVariable> label="Longitude [degrees east]" value_type="FLOAT" qf_schema="SEADATANET" comment="pos"</MetaVariable>"#;
-        let field = AsyncOdvDecoder::odv_field_from_header(line).unwrap();
+        let field = AsyncOdvDecoder::odv_field_from_header(line)
+            .unwrap()
+            .unwrap();
 
         // Units in brackets are stripped from the name and stored as metadata.
         assert_eq!(field.name(), "Longitude");
@@ -545,7 +565,9 @@ mod unit_tests {
     #[test]
     fn odv_field_from_header_handles_no_units_and_non_matching_lines() {
         let line = r#"//<MetaVariable> label="Cruise" value_type="INDEXED_TEXT" qf_schema="SEADATANET" comment=""</MetaVariable>"#;
-        let field = AsyncOdvDecoder::odv_field_from_header(line).unwrap();
+        let field = AsyncOdvDecoder::odv_field_from_header(line)
+            .unwrap()
+            .unwrap();
         assert_eq!(field.name(), "Cruise");
         assert_eq!(field.data_type(), &DataType::Utf8);
         assert!(field.metadata().get("units").is_none());
@@ -553,7 +575,11 @@ mod unit_tests {
         assert!(field.metadata().get("comment").is_none());
 
         // Non-variable comment lines yield no field.
-        assert!(AsyncOdvDecoder::odv_field_from_header("//<Encoding>UTF-8</Encoding>").is_none());
+        assert!(
+            AsyncOdvDecoder::odv_field_from_header("//<Encoding>UTF-8</Encoding>")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
