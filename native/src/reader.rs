@@ -83,7 +83,10 @@ impl OdvSchemaMapper {
         }
 
         for field in input_schema.fields() {
-            for (k, v) in field.metadata() {
+            // Field metadata is a hash map; sort it so each read gives the same column order.
+            let mut metadata: Vec<_> = field.metadata().iter().collect();
+            metadata.sort();
+            for (k, v) in metadata {
                 fields.push(Field::new(
                     format!("{}.{}", field.name(), k),
                     DataType::Utf8,
@@ -143,7 +146,12 @@ impl AsyncOdvDecoder {
         let stream_reader = tokio_util::io::StreamReader::new(input);
         let mut lines = FramedRead::new(stream_reader, tokio_util::codec::LinesCodec::new());
 
-        while let Some(line) = lines.next().await.transpose().unwrap() {
+        while let Some(line) = lines
+            .next()
+            .await
+            .transpose()
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?
+        {
             if !line.starts_with("//") {
                 // Parse as header row
                 header_row = Some(line);
@@ -180,11 +188,14 @@ impl AsyncOdvDecoder {
         }
 
         // Parse header row
-        let header_row = header_row.unwrap();
+        let header_row = header_row
+            .ok_or_else(|| ArrowError::ParseError("the ODV file has no header row".to_string()))?;
         let header_row =
-            AsyncOdvDecoder::header_row(&mut std::io::Cursor::new(header_row.as_bytes())).unwrap();
+            AsyncOdvDecoder::header_row(&mut std::io::Cursor::new(header_row.as_bytes()))
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
         let odv_schema =
-            AsyncOdvDecoder::parse_header_row_with_metadata_to_schema(&header_row, fields).unwrap();
+            AsyncOdvDecoder::parse_header_row_with_metadata_to_schema(&header_row, fields)
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
 
         Ok(OdvSchemaMapper::new(odv_schema))
     }
@@ -326,7 +337,7 @@ impl AsyncOdvDecoder {
             .delimiter(b'\t')
             .comment(Some(b'/'));
         let mut csv_reader = csv_builder.from_reader(reader);
-        let header_row = csv_reader.headers().unwrap().clone();
+        let header_row = csv_reader.headers().map_err(std::io::Error::from)?.clone();
         Ok(header_row)
     }
 
@@ -477,6 +488,23 @@ mod unit_tests {
     #[allow(unused_imports)]
     use super::{arrow, object_store};
     use super::*;
+
+    #[test]
+    fn schema_mapper_orders_metadata_columns_by_key() {
+        let metadata: HashMap<String, String> = ["h", "g", "f", "e", "d", "c", "b", "a"]
+            .iter()
+            .map(|k| (k.to_string(), "v".to_string()))
+            .collect();
+        let field = Field::new("x", DataType::Utf8, true).with_metadata(metadata);
+        let mapper = OdvSchemaMapper::new(Arc::new(arrow::datatypes::Schema::new(vec![field])));
+        let names: Vec<String> = mapper
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["x", "x.a", "x.b", "x.c", "x.d", "x.e", "x.f", "x.g", "x.h"]);
+    }
 
     #[test]
     fn value_type_to_arrow_type_mapping() {
