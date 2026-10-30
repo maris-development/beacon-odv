@@ -22,11 +22,9 @@ use beacon_plugin_sdk::object_store::store::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 
+use crate::options::write_options;
 use crate::reader::{AsyncOdvDecoder, OdvSchemaMapper};
 use crate::writer::{AsyncOdvWriter, OdvOptions};
-
-/// The table option with the write options, as `OdvOptions` JSON.
-const ODV_OPTIONS: &str = "odv_options";
 
 /// The `odv` format.
 ///
@@ -61,11 +59,7 @@ impl FormatFactory for OdvFormat {
     }
 
     fn create(&self, options: &HashMap<String, String>) -> Result<Arc<dyn FormatReader>> {
-        let options = options
-            .get(ODV_OPTIONS)
-            .map(|json| serde_json::from_str::<OdvOptions>(json))
-            .transpose()
-            .map_err(|e| DataFusionError::Configuration(format!("invalid {ODV_OPTIONS}: {e}")))?;
+        let options = write_options(options)?;
         Ok(Arc::new(OdvReader { options }))
     }
 }
@@ -503,11 +497,36 @@ mod tests {
         }
     }
 
+    /// The table options for `options`, with the keys in lower case as Beacon gives them.
     fn with_options(options: &OdvOptions) -> HashMap<String, String> {
-        HashMap::from([(
-            "odv_options".to_string(),
-            serde_json::to_string(options).unwrap(),
-        )])
+        let names = |columns: &[ColumnInfo]| {
+            columns
+                .iter()
+                .map(|c| c.column_name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        HashMap::from([
+            ("key_column".to_string(), options.key_column.clone()),
+            (
+                "longitude_column".to_string(),
+                options.longitude_column.column_name.clone(),
+            ),
+            (
+                "latitude_column".to_string(),
+                options.latitude_column.column_name.clone(),
+            ),
+            (
+                "depth_column".to_string(),
+                options.depth_column.column_name.clone(),
+            ),
+            (
+                "time_column".to_string(),
+                options.time_column.column_name.clone(),
+            ),
+            ("data_columns".to_string(), names(&options.data_columns)),
+            ("meta_columns".to_string(), names(&options.meta_columns)),
+        ])
     }
 
     /// All rows of the test file, sorted as `writer` asks.
@@ -555,10 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn invalid_odv_options_is_an_error() {
-        let options = HashMap::from([("odv_options".to_string(), "{not json".to_string())]);
-        let error = OdvFormat.create(&options).err().expect("an error");
-        assert!(error.to_string().contains("odv_options"), "{error}");
+    fn unknown_option_is_an_error() {
+        let options = HashMap::from([("key_colums".to_string(), "Cruise".to_string())]);
+        let Err(error) = OdvFormat.create(&options) else {
+            panic!("an error");
+        };
+        assert!(error.to_string().contains("key_colums"), "{error}");
     }
 
     #[tokio::test]
@@ -618,7 +639,7 @@ mod tests {
         )))
         .await;
         let result = result.expect("write panicked");
-        println!("write without odv_options: {result:?}");
+        println!("write without options: {result:?}");
     }
 
     #[tokio::test]

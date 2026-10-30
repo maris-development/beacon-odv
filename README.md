@@ -59,43 +59,75 @@ The plugin has an ODV writer. The writer makes one zip archive with these files:
 | `trajectories.txt` | Trajectory data |
 | `errors.txt` | Rows that the writer cannot classify |
 
-The table option `odv_options` sets the write options as JSON:
+Set the write options in `OPTIONS`. This example sets every option:
 
 ```sql
-CREATE EXTERNAL TABLE out STORED AS ODV LOCATION 'out/'
-OPTIONS ('odv_options' '{"key_column": "Cruise", "qf_schema": "SEADATANET", ...}');
+COPY (SELECT * FROM stations)
+TO 'output/stations.zip'
+STORED AS ODV
+OPTIONS (
+  'KEY_COLUMN'          'Cruise',
+  'LONGITUDE_COLUMN'    'Longitude',
+  'LATITUDE_COLUMN'     'Latitude',
+  'DEPTH_COLUMN'        'Depth',
+  'TIME_COLUMN'         'yyyy-mm-ddThh:mm:ss.sss',
+  'DATA_COLUMNS'        'Temperature, Salinity',
+  'META_COLUMNS'        'Station, Type, EDMO_code',
+  'FEATURE_TYPE_COLUMN' 'featureType',
+  'QF_SCHEMA'           'SEADATANET',
+  'COMPRESSION'         'deflate',
+  'ARCHIVING'           'zip_std',
+  'UNITS::Depth'                    'm',
+  'UNITS::Temperature'              'degrees C',
+  'COMMENT::Temperature'            'ITS-90 water temperature',
+  'SIGNIFICANT_DIGITS::Temperature' '3',
+  'QF_COLUMN::Temperature'          'Temperature_qc',
+  'UNITS::Salinity'                 'PSU',
+  'SIGNIFICANT_DIGITS::Salinity'    '4',
+  'QF_COLUMN::Salinity'             'Salinity_qc'
+);
 ```
 
-The JSON must have all the required fields:
+All options are optional. An option that you leave out gets its default.
+Option keys are not case-sensitive.
 
-| Field | Required | Contents |
+| Option | Default | Value |
 | --- | --- | --- |
-| `longitude_column` | yes | The longitude column |
-| `latitude_column` | yes | The latitude column |
-| `depth_column` | yes | The depth or pressure column |
-| `time_column` | yes | The time column |
-| `key_column` | yes | The column that identifies a cruise or deployment |
-| `qf_schema` | yes | The quality flag schema, for example `SEADATANET` |
-| `data_columns` | yes | The data columns. Can be empty. |
-| `meta_columns` | yes | The metadata columns. Can be empty. The alias is `metadata_columns`. |
-| `feature_type_column` | no | A column that sets the ODV type of each row |
-| `archiving` | no | `ZipStd` (default) or `zip_deflate` |
-| `compression` | no | `Stored`, `Deflate` (default) or `Zstd` |
+| `KEY_COLUMN` | `Cruise` | The column that identifies a cruise or deployment |
+| `LONGITUDE_COLUMN` | `Longitude [degrees east]` | The longitude column |
+| `LATITUDE_COLUMN` | `Latitude [degrees north]` | The latitude column |
+| `DEPTH_COLUMN` | `Depth [m]` | The depth or pressure column |
+| `TIME_COLUMN` | `yyyy-MM-ddTHH:mm:ss.SSS` | The time column |
+| `DATA_COLUMNS` | none | The data columns, separated by commas |
+| `META_COLUMNS` | none | The metadata columns, separated by commas |
+| `FEATURE_TYPE_COLUMN` | none | A column that sets the ODV type of each row |
+| `QF_SCHEMA` | `SEADATANET` | The quality flag schema |
+| `COMPRESSION` | `deflate` | `stored`, `deflate` or `zstd` |
+| `ARCHIVING` | `zip_std` | `zip_std` or `zip_deflate` |
 
-Each column field is an object:
+Column options have the key `<option>::<column>`, as the column options of the DataFusion Parquet writer.
+They apply to the longitude, latitude, depth and time columns, and to the data and metadata columns:
 
-| Field | Contents |
+| Option | Value |
 | --- | --- |
-| `column_name` | The column name. Required. |
-| `comment` | A comment for the ODV header |
-| `significant_digits` | The number of significant digits for numbers |
-| `qf_column` | The quality flag column of this column |
-| `units` | The units. The alias is `unit`. |
+| `UNITS::<column>` | The units of the column |
+| `COMMENT::<column>` | A comment for the ODV header |
+| `SIGNIFICANT_DIGITS::<column>` | The number of significant digits, a whole number |
+| `QF_COLUMN::<column>` | The quality flag column of the column |
 
-Without `odv_options`, the writer finds the options from the column names.
-It uses these default names: `Longitude [degrees east]`, `Latitude [degrees north]`, `Depth [m]`, `yyyy-MM-ddTHH:mm:ss.SSS` and `Cruise`.
+Beacon makes all option keys lower case. So the plugin finds the `<column>` of a column option without regard to case.
+Beacon drops an option key that contains a dot. For a column name with a dot, write `format.` before the key, for example `'format.UNITS::Depth.raw'`.
+
+The plugin gives an error for:
+
+- an unknown option
+- a column option for a column that is not in a column option or a column list
+- a `SIGNIFICANT_DIGITS` value that is not a whole number
+- a column option that matches two columns that differ only in case
+
+Without options, the writer finds the options from the column names, with the defaults above.
 A table read from an ODV file has the time column `yyyy-mm-ddThh:mm:ss.sss`.
-So set `odv_options` when you write data that came from ODV files.
+So set `TIME_COLUMN` and the other column options when you write data that came from ODV files.
 
 The writer sorts the rows by the key column, the time column and the depth column.
 
@@ -103,6 +135,7 @@ The writer sorts the rows by the key column, the time column and the depth colum
 
 - Beacon does not call the writer of a plugin yet. `COPY ... TO` and the query output do not use this plugin.
   When Beacon adds this, the output file must get the extension `.zip`.
+  The `COPY ... TO` example above shows the planned use.
 - The plugin registers the file extension `txt`. So `STORED AS TXT` also reads ODV.
 - The built-in Beacon function `read_odv_ascii` has the name `read_odv` in this plugin.
 - The reader does not check that a `.txt` file is ODV. A file that is not ODV can give a table with strange columns.

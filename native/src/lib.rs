@@ -2,6 +2,7 @@
 
 mod error;
 mod format;
+mod options;
 // The ODV code comes from Beacon. Keep its unused API to ease a later comparison.
 #[allow(dead_code)]
 mod reader;
